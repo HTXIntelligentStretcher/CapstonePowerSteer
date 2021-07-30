@@ -29,9 +29,15 @@ int pos = 0;    // variable to store the servo position
 // Recommended PWM GPIO pins on the ESP32 include 2,4,12-19,21-23,25-27,32-33 
 int servoPin = 18;
 
-void onReceiveCommand(uint8_t registerCode, int howMany, uint8_t* data);
+
+// A periodic task. Reads IMU, then handles turning left/right/reverse
 void IMUUpdate(void *param);
+
+// A periodic task. 
 void powerAssistUpdate(void* param);
+
+// Callback from receiving data from RPI, Should handle the command to turn on/off power steering
+void onReceiveCommand(uint8_t registerCode, int howMany, uint8_t* data);
 
 void setup() {
   // put your setup code here, to run once:
@@ -39,6 +45,8 @@ void setup() {
   pinMode(POWER_STEER_PIN, OUTPUT);
   Rpi::initWireSlave(SDA, SCL, i2c_esp32);
   Rpi::registerReceiveRequest(onReceiveCommand);
+
+  // xTaskCreate Definition: https://www.freertos.org/a00125.html
   xTaskCreate(&IMUUpdate, "IMU", 10000, NULL, 1, NULL);
   xTaskCreate(&powerAssistUpdate, "powerassist", 10000, NULL, 0, NULL);
 }
@@ -109,7 +117,7 @@ void onReceiveCommand(uint8_t registerCode, int howMany, uint8_t* data) {
 
 void powerAssistUpdate(void* param) {
   for(;;) {
-    Rpi::updateWire();
+    Rpi::updateWire(); // Invokes callback functions if data is availabl
     switch(powerSteerStatus) {
       case POWER_STEER_ENABLED:
         digitalWrite(POWER_STEER_PIN, HIGH);
