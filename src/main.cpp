@@ -68,7 +68,7 @@ void setup() {
   initServo();
   initIMU();
 
-  mySteering.write(90);
+  mySteering.write(0);
   myServo.write(0);
 
   // xTaskCreate Definition: https://www.freertos.org/a00125.html
@@ -138,7 +138,7 @@ void IMUUpdate(void *param) {
     if (abs(mySensor.accelY()) > accelYThreshold) {
       Serial.println("forward/back: servo move to 90");
       if (pos < 90) {
-        for (int _pos = pos; _pos < 90; _pos += 1) { // goes from 0 degrees to 180 degrees
+        for (int _pos = pos; _pos < 180; _pos += 1) { // goes from 0 degrees to 180 degrees
           pos += 1; // in steps of 1 degree
           mySteering.write(_pos);    // tell servo to go to position in variable 'pos'
           vTaskDelay(MOTOR_DELAY_MS);
