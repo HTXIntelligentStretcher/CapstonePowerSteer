@@ -8,6 +8,7 @@
 #include <WireSlave.h>
 #endif
 
+
 namespace Rpi 
 {
 uint8_t data[MAX_PACKET_LENGTH];

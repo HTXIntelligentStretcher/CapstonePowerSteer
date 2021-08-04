@@ -1,26 +1,32 @@
+// #define HTX_TEST
+// #define NO_RPI_TEST
+#ifndef NO_RPI_TEST
 #include "RpiFunctions.hpp"
+#endif
 #include <Arduino.h>
+#include <Wire.h>
 #include <ESP32Servo.h>
 #include <MPU9250_asukiaaa.h>
 
+
 //const int POWER_STEER_LIFT_PIN = 13;
-const int liftServoPin = 18;
-const int steerServoPin = 12;
+const int servosEnablePin = 14;
+const int liftControlServoPin = 18;
+const int steerControlServoPin = 12;
 const int directionPin = 19; //high is forward, low is backward
+const int manualPowerControlPin = 17;
 const int hubPin = 13;
 uint8_t powerSteerStatus;
 
+const uint8_t POWER_STEER_DISABLED = 0x00;
 const uint8_t POWER_STEER_ENABLED = 0x01;
-const uint8_t POWER_STEER_DISABLED = 0x02;
 
-#define SDA 21
-#define SCL 22
-#define imu_SDA_PIN 23
-#define imu_SCL_PIN 5
+// #define SDA 21
+// #define SCL 22
+#define imu_SDA_PIN 21
+#define imu_SCL_PIN 22
 
-
-const int16_t i2c_esp32=0x06;
-
+const int16_t i2c_esp32=0x05;
 
 Servo myServo;  // create servo object to control a servo
 Servo mySteering;
@@ -35,6 +41,7 @@ int minServoFreq = 500;
 int maxServoFreq = 2400;
 
 int pos = 90;    // variable to store the servo position
+int liftServoPos = 0;
 // Recommended PWM GPIO pins on the ESP32 include 2,4,12-19,21-23,25-27,32-33 
 
 void initServo();
@@ -55,36 +62,44 @@ void setup() {
   Serial.begin(9600);
   pinMode(directionPin, OUTPUT);
   pinMode(hubPin, OUTPUT);
+  pinMode(manualPowerControlPin, INPUT);
+  pinMode(servosEnablePin, OUTPUT);
+  // Serial.println("Pre rpi init");
+#ifndef NO_RPI_TEST
   // Rpi::initWireSlave(SDA, SCL, i2c_esp32);
   // Rpi::registerReceiveRequest(onReceiveCommand);
+#endif
 
-  #ifdef _ESP32_HAL_I2C_H_
+#ifndef HTX_TEST
+#ifdef _ESP32_HAL_I2C_H_
   // for esp32
-  Wire.begin(imu_SDA_PIN, imu_SCL_PIN); //sda, scl
-  #else
+  // Serial.println("pre imu sda scl");
+  Wire.begin(imu_SDA_PIN, imu_SCL_PIN); //sda, scl/
+#else
   Wire.begin();
-  #endif
-
+#endif
+  // Serial.println("preservoimu");
   initServo();
+  // Serial.println("servo init");
   initIMU();
-
+  Serial.println("Servero and imu init");
+  delay(5000);
   mySteering.write(0);
   myServo.write(0);
-
-  // xTaskCreate Definition: https://www.freertos.org/a00125.html
   xTaskCreate(&IMUUpdate, "IMU", 10000, NULL, 1, NULL);
+#endif // ifdef HTX_TEST
   // xTaskCreate(&powerAssistUpdate, "powerassist", 10000, NULL, 0, NULL);
-  
-  
 }
 
 
 void loop() {
-  // put your main code here, to run repeatedly:
+#ifndef HTX_TEST
   //digitalWrite(POWER_STEER_LIFT_PIN, HIGH);
   //delay(100);
   mySensor.gyroUpdate();
   mySensor.accelUpdate();
+  // Rpi::updateWire();
+#endif // ifndef HTX_TEST
 }
 
 void initServo() {
@@ -94,9 +109,9 @@ void initServo() {
   ESP32PWM::allocateTimer(2);
   ESP32PWM::allocateTimer(3);
   myServo.setPeriodHertz(50);    // standard 50 hz servo
-  myServo.attach(liftServoPin, minServoFreq, maxServoFreq); // attaches the servo on pin 18 to the servo object
+  myServo.attach(liftControlServoPin, minServoFreq, maxServoFreq); // attaches the servo on pin 18 to the servo object
   mySteering.setPeriodHertz(50);    // standard 50 hz servo
-  mySteering.attach(steerServoPin, minServoFreq, maxServoFreq); // attaches the servo on pin 18 to the servo object
+  mySteering.attach(steerControlServoPin, minServoFreq, maxServoFreq); // attaches the servo on pin 18 to the servo object
   // using default min/max of 1000us and 2000us
   // different servos may require different min/max settings
   // for an accurate 0 to 180 sweep
@@ -134,7 +149,7 @@ void IMUUpdate(void *param) {
     
 
     //accelY hub motor
-    //Serial.println("accelY: " + String(mySensor.accelY()));
+    Serial.println("accelY: " + String(mySensor.accelY()));
     if (abs(mySensor.accelY()) > accelYThreshold) {
       Serial.println("forward/back: servo move to 90");
       if (pos < 90) {
@@ -190,141 +205,50 @@ void onReceiveCommand(uint8_t registerCode, int howMany, uint8_t* data) {
   }
 }
 
+void lowerMotor() {
+  Serial.println("Lowering motor");
+  for (; liftServoPos < 90; liftServoPos++) {
+    if (powerSteerStatus == POWER_STEER_DISABLED) {
+      return;
+    } 
+    myServo.write(liftServoPos);
+    vTaskDelay(MOTOR_DELAY_MS);
+  }
+  Serial.println("Motor Lowered");
+}
+
+void liftMotor() {
+  Serial.println("Lifting motor");
+  for (; liftServoPos > 0; liftServoPos--) {
+    if (powerSteerStatus == POWER_STEER_ENABLED) {
+      return;
+    }
+    myServo.write(liftServoPos);
+    vTaskDelay(MOTOR_DELAY_MS);
+  }
+  Serial.println("Motor lifted");
+}
+
 void powerAssistUpdate(void* param) {
   for(;;) {
-    Rpi::updateWire(); // Invokes callback functions if data is availabl
+#ifndef NO_RPI_TEST
+    Rpi::updateWire(); // Invokes callback functions if data is available
+#else
+    powerSteerStatus = digitalRead(manualPowerControlPin);
+#endif
+    Serial.printf("Power Steer status %d\n", powerSteerStatus);
+#ifndef HTX_TEST
     switch(powerSteerStatus) {
       case POWER_STEER_ENABLED:
-        for (int i = 0; i < 90; i++) {
-          myServo.write(i);
-        }
+        digitalWrite(servosEnablePin, HIGH);
+        lowerMotor();
         break;
       case POWER_STEER_DISABLED:
       default:
-        for (int i = 90; i > 0; i++) {
-          myServo.write(i);
-        }
+        liftMotor();
+        digitalWrite(servosEnablePin, LOW);
     }
-    taskYIELD();
+#endif
+    vTaskDelay(50);
   }
 }
-
-// /* Sweep
-//  by BARRAGAN <http://barraganstudio.com>
-//  This example code is in the public domain.
-
-//  modified 8 Nov 2013
-//  by Scott Fitzgerald
-
-//  modified for the ESP32 on March 2017
-//  by John Bennett
-
-//  see http://www.arduino.cc/en/Tutorial/Sweep for a description of the original code
-
-//  * Different servos require different pulse widths to vary servo angle, but the range is 
-//  * an approximately 500-2500 microsecond pulse every 20ms (50Hz). In general, hobbyist servos
-//  * sweep 180 degrees, so the lowest number in the published range for a particular servo
-//  * represents an angle of 0 degrees, the middle of the range represents 90 degrees, and the top
-//  * of the range represents 180 degrees. So for example, if the range is 1000us to 2000us,
-//  * 1000us would equal an angle of 0, 1500us would equal 90 degrees, and 2000us would equal 1800
-//  * degrees.
-//  * 
-//  * Circuit: (using an ESP32 Thing from Sparkfun)
-//  * Servo motors have three wires: power, ground, and signal. The power wire is typically red,
-//  * the ground wire is typically black or brown, and the signal wire is typically yellow,
-//  * orange or white. Since the ESP32 can supply limited current at only 3.3V, and servos draw
-//  * considerable power, we will connect servo power to the VBat pin of the ESP32 (located
-//  * near the USB connector). THIS IS ONLY APPROPRIATE FOR SMALL SERVOS. 
-//  * 
-//  * We could also connect servo power to a separate external
-//  * power source (as long as we connect all of the grounds (ESP32, servo, and external power).
-//  * In this example, we just connect ESP32 ground to servo ground. The servo signal pins
-//  * connect to any available GPIO pins on the ESP32 (in this example, we use pin 18.
-//  * 
-//  * In this example, we assume a Tower Pro MG995 large servo connected to an external power source.
-//  * The published min and max for this servo is 1000 and 2000, respectively, so the defaults are fine.
-//  * These values actually drive the servos a little past 0 and 180, so
-//  * if you are particular, adjust the min and max values to match your needs.
-//  */
-
-// #include <ESP32Servo.h>
-// #include <MPU9250_asukiaaa.h>
- 
-// #ifdef _ESP32_HAL_I2C_H_
-// #define SDA_PIN 23
-// #define SCL_PIN 5
-// #endif
-
-// Servo myServo;  // create servo object to control a servo
-// //Servo mySteering;
-// // 16 servo objects can be created on the ESP32
-// MPU9250_asukiaaa mySensor;
-
-// float gyroZThreshold = 200;
-// float accelXThreshold = 0.8;
-// float accelYThreshold = 0.8;
-
-// int pos = 0;    // variable to store the servo position
-// // Recommended PWM GPIO pins on the ESP32 include 2,4,12-19,21-23,25-27,32-33 
-// int servoPin = 18;
-
-// void setup() {
-//   // Allow allocation of all timers
-//   ESP32PWM::allocateTimer(0);
-//   ESP32PWM::allocateTimer(1);
-//   ESP32PWM::allocateTimer(2);
-//   ESP32PWM::allocateTimer(3);
-//   myServo.setPeriodHertz(50);    // standard 50 hz servo
-//   myServo.attach(servoPin, 500, 2400); // attaches the servo on pin 18 to the servo object
-//   // using default min/max of 1000us and 2000us
-//   // different servos may require different min/max settings
-//   // for an accurate 0 to 180 sweep
-
-//  Serial.begin(115200);
-// Serial.println("started");
- 
-// #ifdef _ESP32_HAL_I2C_H_
-// // for esp32
-// Wire.begin(SDA_PIN, SCL_PIN); //sda, scl
-// #else
-// Wire.begin();
-// #endif
- 
-// //mySensor.setWire(&Wire);
- 
-// mySensor.beginAccel();
-// mySensor.beginGyro();
-
-// myServo.write(90);
-// }
-
-// void loop() {
-// //mySensor.accelUpdate();
-// //Serial.println("accelX: " + String(mySensor.accelX()));
-// //Serial.println("accelY: " + String(mySensor.accelY()));
-
-// mySensor.gyroUpdate();
-// Serial.println("gyroZ: " + String(mySensor.gyroZ()));
-
-
-//  if (mySensor.gyroZ() > gyroZThreshold && pos < 90) {
-//   Serial.println("servo move to 90");
-//   Serial.println("servo move to 90");
-//   Serial.println("servo move to 90");
-//   for (int _pos = pos; _pos <= 90; _pos += 1) { // goes from 0 degrees to 180 degrees
-//     pos += 1; // in steps of 1 degree
-//     myServo.write(_pos);    // tell servo to go to position in variable 'pos'
-//     delay(15);             // waits 15ms for the servo to reach the position
-//   }
-//   }
-// else if (mySensor.gyroZ() < -gyroZThreshold && pos > 0) {
-//   Serial.println("servo move to 00");
-//   Serial.println("servo move to 00");
-//   Serial.println("servo move to 00");
-//   for (int _pos = pos; _pos >= 0; _pos -= 1) { // goes from 180 degrees to 0 degrees
-//     pos -= 1;
-//     myServo.write(_pos);    // tell servo to go to position in variable 'pos'
-//     delay(15);             // waits 15ms for the servo to reach the position
-//   }
-//  }
-// }
