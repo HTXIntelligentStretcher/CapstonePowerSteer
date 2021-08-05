@@ -1,32 +1,37 @@
 // #define HTX_TEST
-// #define NO_RPI_TEST
-#ifndef NO_RPI_TEST
-#include "RpiFunctions.hpp"
-#endif
+#include "network.hpp"
 #include <Arduino.h>
 #include <Wire.h>
 #include <ESP32Servo.h>
 #include <MPU9250_asukiaaa.h>
+#include <ArduinoJson.h>
 
 
 //const int POWER_STEER_LIFT_PIN = 13;
-const int servosEnablePin = 14;
-const int liftControlServoPin = 18;
-const int steerControlServoPin = 12;
-const int directionPin = 19; //high is forward, low is backward
-const int manualPowerControlPin = 17;
+const int servosEnablePin = 32;
+const int liftControlServoPin = 12; //blue
+const int steerControlServoPin = 14; //purpe
+const int directionPin = 27; //high is forward, low is backward
+const int manualPowerControlPin = 25;
 const int hubPin = 13;
+const int imuSDA = 21;
+const int imuSCL = 22;
+const int forcedDirectionPullUp = 26;
 uint8_t powerSteerStatus;
+uint8_t powerSteerStatusNet;
+uint8_t powerSteerStatusNetOld;
+uint8_t powerSteerStatusManual;
+uint8_t powerSteerStatusManualOld;
+
+char* MQTT_SUB_TOPIC = "actuator/assist";
+const char* POWER_ASS_COMMAND = "powerAssCommand";
+const char* POWER_CMD_ON = "on";
+const char* POWER_CMD_OFF = "off";
+
+DynamicJsonDocument doc(1024);
 
 const uint8_t POWER_STEER_DISABLED = 0x00;
 const uint8_t POWER_STEER_ENABLED = 0x01;
-
-// #define SDA 21
-// #define SCL 22
-#define imu_SDA_PIN 21
-#define imu_SCL_PIN 22
-
-const int16_t i2c_esp32=0x05;
 
 Servo myServo;  // create servo object to control a servo
 Servo mySteering;
@@ -34,7 +39,7 @@ Servo mySteering;
 MPU9250_asukiaaa mySensor;
 
 float gyroZThreshold = 200;
-float accelXThreshold = 0.8;
+float accelXThreshold = 0.11;
 float accelYThreshold = 0.8;
 float MOTOR_DELAY_MS = 15;
 int minServoFreq = 500;
@@ -55,7 +60,7 @@ void IMUUpdate(void *param);
 void powerAssistUpdate(void* param);
 
 // Callback from receiving data from RPI, Should handle the command to turn on/off power steering
-void onReceiveCommand(uint8_t registerCode, int howMany, uint8_t* data);
+void onReceiveCommand(char* topic, byte* payload, unsigned int length);
 
 void setup() {
   // put your setup code here, to run once:
@@ -64,17 +69,17 @@ void setup() {
   pinMode(hubPin, OUTPUT);
   pinMode(manualPowerControlPin, INPUT);
   pinMode(servosEnablePin, OUTPUT);
-  // Serial.println("Pre rpi init");
-#ifndef NO_RPI_TEST
-  // Rpi::initWireSlave(SDA, SCL, i2c_esp32);
-  // Rpi::registerReceiveRequest(onReceiveCommand);
-#endif
-
+  pinMode(forcedDirectionPullUp, OUTPUT); // temp
+  digitalWrite(forcedDirectionPullUp, HIGH); // temp
+  digitalWrite(directionPin, LOW);
+  Wire.begin(imuSDA, imuSCL); //sda, scl/
 #ifndef HTX_TEST
+  net::connectToWifi();
+  net::subscribeToMQTT(MQTT_SUB_TOPIC, onReceiveCommand);
+  net::connectToMQTT();
 #ifdef _ESP32_HAL_I2C_H_
   // for esp32
   // Serial.println("pre imu sda scl");
-  Wire.begin(imu_SDA_PIN, imu_SCL_PIN); //sda, scl/
 #else
   Wire.begin();
 #endif
@@ -88,7 +93,7 @@ void setup() {
   myServo.write(0);
   xTaskCreate(&IMUUpdate, "IMU", 10000, NULL, 1, NULL);
 #endif // ifdef HTX_TEST
-  // xTaskCreate(&powerAssistUpdate, "powerassist", 10000, NULL, 0, NULL);
+  xTaskCreate(&powerAssistUpdate, "powerassist", 10000, NULL, 0, NULL);
 }
 
 
@@ -127,7 +132,7 @@ void IMUUpdate(void *param) {
   for (;;) {
     //Serial.println("pos: " + String(pos));
     //gyro steering
-    //Serial.println("gyroZ: " + String(mySensor.gyroZ()));
+    // Serial.println("gyroZ: " + String(mySensor.gyroZ()));
 
     if (abs(mySensor.gyroZ()) > gyroZThreshold) {
       Serial.println("turning: servo move to 00");
@@ -138,8 +143,12 @@ void IMUUpdate(void *param) {
           vTaskDelay(MOTOR_DELAY_MS);
         }
       }
-      if (mySensor.gyroZ() > 0) digitalWrite(directionPin, LOW); 
-      else digitalWrite(directionPin, HIGH);
+      if (mySensor.gyroZ() > 0) { 
+        // digitalWrite(directionPin, LOW); 
+      }
+      else {
+        // digitalWrite(directionPin, HIGH); 
+      }
       digitalWrite(hubPin, HIGH);
     }
     else {
@@ -149,8 +158,8 @@ void IMUUpdate(void *param) {
     
 
     //accelY hub motor
-    Serial.println("accelY: " + String(mySensor.accelY()));
-    if (abs(mySensor.accelY()) > accelYThreshold) {
+    // Serial.println("accelX: " + String(mySensor.accelX()));
+    if (abs(mySensor.accelX()) > accelXThreshold) {
       Serial.println("forward/back: servo move to 90");
       if (pos < 90) {
         for (int _pos = pos; _pos < 180; _pos += 1) { // goes from 0 degrees to 180 degrees
@@ -159,18 +168,22 @@ void IMUUpdate(void *param) {
           vTaskDelay(MOTOR_DELAY_MS);
         }
       }
-      if (mySensor.accelY() > 0) digitalWrite(directionPin, HIGH); 
-      else digitalWrite(directionPin, LOW);
+      if (mySensor.accelY() > 0) { 
+        // digitalWrite(directionPin, HIGH);
+      }
+      else { 
+        // digitalWrite(directionPin, LOW); 
+        }
       digitalWrite(hubPin, HIGH);
     }
     else {
       //Serial.println("no accelY");
-      taskYIELD();
+      vTaskDelay(20);
       }
 
     //accelX hub motor
-    //Serial.println("accelX: " + String(mySensor.accelX()));
-    if (abs(mySensor.accelX()) > accelXThreshold) {
+    // Serial.println("accelY: " + String(mySensor.accelY()));
+    if (abs(mySensor.accelY()) > accelYThreshold) {
       Serial.println("strafing: servo move to 00");
       if (pos > 0) {
         for (int _pos = pos; _pos > 0; _pos -= 1) { // goes from 0 degrees to 180 degrees
@@ -179,29 +192,40 @@ void IMUUpdate(void *param) {
           vTaskDelay(MOTOR_DELAY_MS);
         }
       }
-        if (mySensor.accelX() > 0) digitalWrite(directionPin, LOW); 
-        else digitalWrite(directionPin, HIGH);
+        if (mySensor.accelY() > 0) { 
+          // digitalWrite(directionPin, LOW);
+           }
+        else {
+          //  digitalWrite(directionPin, HIGH);
+        }
         digitalWrite(hubPin, HIGH);
         vTaskDelay(MOTOR_DELAY_MS);
     }
     else {
       //Serial.println("no accelX");
-      taskYIELD();
+      vTaskDelay(20);
       }
 
     if (abs(mySensor.gyroZ()) < gyroZThreshold && abs(mySensor.accelY()) < accelYThreshold && abs(mySensor.accelX()) < accelXThreshold) {
       digitalWrite(hubPin, LOW);
     }
-    else taskYIELD();
+    else vTaskDelay(20);
   }
 }
 
 
-void onReceiveCommand(uint8_t registerCode, int howMany, uint8_t* data) {
-  switch(registerCode) {
-    case 0x01:
-      powerSteerStatus = data[0];
-      break;
+void onReceiveCommand(char* topic, byte* payload, unsigned int length) {
+  Serial.println("onreceie");
+  char* buffer = (char*) payload;
+  deserializeJson(doc, buffer);
+  const char* cmd = doc[POWER_ASS_COMMAND];
+  Serial.println(cmd);
+  if (strcmp(cmd, POWER_CMD_ON) == 0) {
+    powerSteerStatus = POWER_STEER_ENABLED;
+    Serial.println("power on");
+  } else if (strcmp(cmd, POWER_CMD_OFF) == 0) {
+    powerSteerStatus = POWER_STEER_DISABLED;
+    Serial.println("power off");
   }
 }
 
@@ -214,7 +238,7 @@ void lowerMotor() {
     myServo.write(liftServoPos);
     vTaskDelay(MOTOR_DELAY_MS);
   }
-  Serial.println("Motor Lowered");
+  // Serial.println("Motor Lowered");
 }
 
 void liftMotor() {
@@ -226,27 +250,38 @@ void liftMotor() {
     myServo.write(liftServoPos);
     vTaskDelay(MOTOR_DELAY_MS);
   }
-  Serial.println("Motor lifted");
+  // Serial.println("Motor lifted");
 }
 
 void powerAssistUpdate(void* param) {
   for(;;) {
-#ifndef NO_RPI_TEST
-    Rpi::updateWire(); // Invokes callback functions if data is available
-#else
-    powerSteerStatus = digitalRead(manualPowerControlPin);
-#endif
-    Serial.printf("Power Steer status %d\n", powerSteerStatus);
+    net::checkConnection();
+    // powerSteerStatusManual = digitalRead(manualPowerControlPin);
+    // if (powerSteerStatusManual != powerSteerStatusManualOld) {
+    //   powerSteerStatus = powerSteerStatusManual;
+    //   powerSteerStatusManualOld = powerSteerStatusManual;
+    //   powerSteerStatusNetOld = powerSteerStatusNet;
+    // } else if (powerSteerStatusNet != powerSteerStatusNetOld) {
+    //   powerSteerStatus = powerSteerStatusNet;
+    //   powerSteerStatusManualOld = powerSteerStatusManual;
+    //   powerSteerStatusNetOld = powerSteerStatusNet;
+    // } else {
+    //   vTaskDelay(20);
+    //   continue;
+    // }
+    // Serial.printf("Power Steer status %d\n", powerSteerStatus);
 #ifndef HTX_TEST
     switch(powerSteerStatus) {
       case POWER_STEER_ENABLED:
-        digitalWrite(servosEnablePin, HIGH);
+        // digitalWrite(servosEnablePin, HIGH);
+        // digitalWrite(hubPin, LOW);
         lowerMotor();
         break;
       case POWER_STEER_DISABLED:
       default:
         liftMotor();
-        digitalWrite(servosEnablePin, LOW);
+        // digitalWrite(servosEnablePin, LOW);
+        // digitalWrite(hubPin, HIGH);
     }
 #endif
     vTaskDelay(50);
