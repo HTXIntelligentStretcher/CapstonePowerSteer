@@ -8,7 +8,7 @@
 
 namespace net {
 
-const int CONNECT_WIFI_DELAY_MS = 3000;
+const int CONNECT_WIFI_DELAY_MS = 10000;
 
 void connectToWifi();
 

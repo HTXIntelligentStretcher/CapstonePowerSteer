@@ -39,7 +39,7 @@ Servo mySteering;
 MPU9250_asukiaaa mySensor;
 
 float gyroZThreshold = 200;
-float accelXThreshold = 0.11;
+float accelXThreshold = 0.2;
 float accelYThreshold = 0.8;
 float MOTOR_DELAY_MS = 15;
 int minServoFreq = 500;
@@ -74,6 +74,7 @@ void setup() {
   digitalWrite(directionPin, LOW);
   Wire.begin(imuSDA, imuSCL); //sda, scl/
 #ifndef HTX_TEST
+  Serial.println("init connecting wifi");
   net::connectToWifi();
   net::subscribeToMQTT(MQTT_SUB_TOPIC, onReceiveCommand);
   net::connectToMQTT();
@@ -208,6 +209,7 @@ void IMUUpdate(void *param) {
 
     if (abs(mySensor.gyroZ()) < gyroZThreshold && abs(mySensor.accelY()) < accelYThreshold && abs(mySensor.accelX()) < accelXThreshold) {
       digitalWrite(hubPin, LOW);
+      // digitalWrite(hubPin, HIGH);
     }
     else vTaskDelay(20);
   }
@@ -220,10 +222,10 @@ void onReceiveCommand(char* topic, byte* payload, unsigned int length) {
   deserializeJson(doc, buffer);
   const char* cmd = doc[POWER_ASS_COMMAND];
   Serial.println(cmd);
-  if (strcmp(cmd, POWER_CMD_ON) == 0) {
+  if (strcmp(cmd, POWER_CMD_ON) != 0) {
     powerSteerStatus = POWER_STEER_ENABLED;
     Serial.println("power on");
-  } else if (strcmp(cmd, POWER_CMD_OFF) == 0) {
+  } else if (strcmp(cmd, POWER_CMD_OFF) != 0) {
     powerSteerStatus = POWER_STEER_DISABLED;
     Serial.println("power off");
   }
